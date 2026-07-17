@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.posturewatch</groupId>
+    <artifactId>posture-guard-poc</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- javacv-platform bundles native OpenCV/FFmpeg binaries for
+             windows/mac/linux so you don't need to install OpenCV separately -->
+        <javacv.version>1.5.10</javacv.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacv-platform</artifactId>
+            <version>${javacv.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>posture-guard-poc</finalName>
+        <plugins>
+            <!-- Lets you run with: mvn compile exec:java -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <configuration>
+                    <!-- exec:exec forks a new JVM so we can set apple.awt.UIElement
+                         before AWT initialises, which hides the Dock icon. -->
+                    <executable>java</executable>
+                    <arguments>
+                        <argument>-Dapple.awt.UIElement=true</argument>
+                        <argument>-classpath</argument>
+                        <classpath/>
+                        <argument>com.posturewatch.ScreenDistanceMonitor</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
