@@ -8,6 +8,7 @@ import org.bytedeco.opencv.opencv_core.Mat;
 import org.bytedeco.opencv.opencv_core.Rect;
 import org.bytedeco.opencv.opencv_core.RectVector;
 import org.bytedeco.opencv.opencv_core.Scalar;
+import org.bytedeco.opencv.opencv_core.Size;
 import org.bytedeco.opencv.opencv_objdetect.CascadeClassifier;
 
 import javax.swing.*;
@@ -29,11 +30,12 @@ import static org.bytedeco.opencv.global.opencv_imgproc.*;
 public class ScreenDistanceMonitor {
 
     // ── Detection constants ──────────────────────────────────────────────────
-    private static final double DISTANCE_ALERT_RATIO = 1.20;
-    private static final double HEAD_ANGLE_THRESHOLD = 0.09;
+    private static final double DISTANCE_ALERT_RATIO = 1.35;
+    private static final double HEAD_ANGLE_THRESHOLD = 0.12;
     private static final int    CALIBRATION_FRAMES   = 30;
-    private static final int    CHECK_FRAMES         = 20;
-    private static final int    CONSECUTIVE_REQUIRED = 8;
+
+    private static final int    MIN_FACE_FRAMES      = 12;
+    private static final int    ISSUE_THRESHOLD_PCT  = 50;   // majority of face frames must show issue
     private static final int    PW = 320, PH = 240;
 
     private static final String[] DISTANCE_TIPS = {
@@ -50,31 +52,22 @@ public class ScreenDistanceMonitor {
     private static volatile int distanceTipIdx = 0;
     private static volatile int angleTipIdx    = 0;
 
-    private static final String[] FREQ_LABELS  = {"15s", "30s", "1m", "2m", "5m"};
-    private static final int[]    FREQ_SECONDS = { 15,    30,   60,  120,  300 };
+    private static final String[] FREQ_LABELS  = {"15s", "30s", "1m", "2m", "5m", "···"};
+    private static final int[]    FREQ_SECONDS = { 15,    30,   60,  120,  300,   0  };
     private static volatile int   checkInterval = FREQ_SECONDS[1];
 
     // ── Theme ────────────────────────────────────────────────────────────────
-    private static final Color[] ACCENT_PRESETS = {
-        new Color(0,   210, 255),  // Cyan
-        new Color(140,  80, 255),  // Purple
-        new Color(0,   230, 130),  // Green
-        new Color(255, 140,   0),  // Orange
-        new Color(255,  60, 130),  // Pink
-    };
-    private static int     accentIdx = 0;
     private static boolean darkMode  = true;
 
     // Mutable design tokens — updated by applyTheme()
-    private static Color BG         = new Color(9,   9,   13);
-    private static Color BG2        = new Color(15,  15,  22);
-    private static Color ACCENT     = ACCENT_PRESETS[0];
-    private static Color ACCENT_DIM = new Color(0,   210, 255, 35);
-    private static Color TEXT_HI    = new Color(230, 235, 255);
-    private static Color TEXT_DIM   = new Color(90,  100, 130);
-    private static Color TOGGLE_LBL = new Color(170, 175, 200);
-    private static final Color GOOD = new Color(0,   230, 130);
-    private static final Color BAD  = new Color(255,  55,  75);
+    private static Color BG         = new Color(18,  18,  20);
+    private static Color BG2        = new Color(28,  28,  32);
+    private static Color ACCENT     = new Color(90, 120, 200);
+    private static Color TEXT_HI    = new Color(220, 222, 230);
+    private static Color TEXT_DIM   = new Color(100, 105, 120);
+    private static Color TOGGLE_LBL = new Color(160, 165, 185);
+    private static final Color GOOD = new Color(60,  170,  90);
+    private static final Color BAD  = new Color(210,  65,  75);
 
     // ── App state ────────────────────────────────────────────────────────────
     private static volatile boolean monitoring     = false;
@@ -97,15 +90,11 @@ public class ScreenDistanceMonitor {
     // Theme-sensitive labels (updated by applyTheme)
     private static JLabel headerDotLabel;
     private static JLabel headerTitleLabel;
-    private static JLabel checkEveryLabel;
-    private static JLabel monitoringLabel;
-    private static JLabel cameraLabel;
-    private static JLabel appearanceLabel;
-    private static JLabel accentColorLabel;
-    private static JLabel lightModeLabel;
-    // Tab buttons
-    private static JButton tabMonitorBtn;
-    private static JButton tabSettingsBtn;
+    private static JLabel headerThemeLabel;
+    private static JLabel     checkEveryLabel;
+    private static JLabel     monitoringLabel;
+    private static JLabel     cameraLabel;
+    private static JSpinner customIntervalField;
 
     private static CascadeClassifier        faceDetector;
     private static ScheduledExecutorService checkScheduler;
@@ -167,11 +156,6 @@ public class ScreenDistanceMonitor {
             int b  = lerp(offB, ac.getBlue(),  anim);
             g2.setColor(new Color(r, gr, b, (int)(255 * a)));
             g2.fillRoundRect(0, 0, w, h, h, h);
-            if (anim > 0.1f) {
-                g2.setColor(new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), (int)(40 * anim * a)));
-                g2.setStroke(new BasicStroke(3));
-                g2.drawRoundRect(-1, -1, w+2, h+2, h+2, h+2);
-            }
             int td = h - 4, tx = 2 + (int)(anim * (w - td - 4));
             g2.setColor(new Color(0, 0, 0, 60));
             g2.fillOval(tx + 1, 3, td, td);
@@ -227,23 +211,17 @@ public class ScreenDistanceMonitor {
                     Graphics2D g2 = (Graphics2D) g.create();
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                     int w = getWidth(), h = getHeight();
-                    Color ac = ACCENT;
                     if (active) {
-                        g2.setColor(new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 35));
-                        g2.fillRoundRect(-2, -2, w+4, h+4, h+4, h+4);
-                        g2.setColor(darkMode ? new Color(0, 60, 80) : new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 50));
+                        g2.setColor(darkMode ? new Color(40, 50, 80) : new Color(210, 218, 240));
                         g2.fillRoundRect(0, 0, w, h, h, h);
-                        g2.setColor(ac);
-                        g2.setStroke(new BasicStroke(1.2f));
-                        g2.drawRoundRect(0, 0, w-1, h-1, h-1, h-1);
-                        g2.setFont(getFont().deriveFont(Font.BOLD));
-                        g2.setColor(ac);
-                    } else {
-                        g2.setColor(darkMode ? new Color(25, 25, 36) : new Color(218, 220, 228));
-                        g2.fillRoundRect(0, 0, w, h, h, h);
-                        g2.setColor(darkMode ? new Color(60, 65, 85) : new Color(180, 183, 197));
+                        g2.setColor(ACCENT);
                         g2.setStroke(new BasicStroke(1.0f));
                         g2.drawRoundRect(0, 0, w-1, h-1, h-1, h-1);
+                        g2.setFont(getFont().deriveFont(Font.BOLD));
+                        g2.setColor(ACCENT);
+                    } else {
+                        g2.setColor(darkMode ? new Color(30, 30, 36) : new Color(225, 226, 232));
+                        g2.fillRoundRect(0, 0, w, h, h, h);
                         g2.setFont(getFont());
                         g2.setColor(TEXT_DIM);
                     }
@@ -269,13 +247,8 @@ public class ScreenDistanceMonitor {
             setPreferredSize(new Dimension(0, 1));
         }
         @Override protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            Color ac = ACCENT;
-            g2.setPaint(new GradientPaint(
-                    0, 0, new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 0),
-                    getWidth() / 2f, 0, new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 45)));
-            g2.fillRect(0, 0, getWidth(), 1);
-            g2.dispose();
+            g.setColor(darkMode ? new Color(40, 42, 50) : new Color(208, 210, 218));
+            g.fillRect(0, 0, getWidth(), 1);
         }
     }
 
@@ -304,19 +277,8 @@ public class ScreenDistanceMonitor {
 
         popupRoot = new JPanel() {
             @Override protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(BG);
-                g2.fillRect(0, 0, getWidth(), getHeight());
-                Color ac = ACCENT;
-                GradientPaint shine = new GradientPaint(
-                        0, 0, new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), darkMode ? 22 : 12),
-                        0, 60, new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 0));
-                g2.setPaint(shine);
-                g2.fillRect(0, 0, getWidth(), 60);
-                g2.setColor(new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 18));
-                g2.fillRect(getWidth() - 1, 0, 1, getHeight());
-                g2.dispose();
+                g.setColor(BG);
+                g.fillRect(0, 0, getWidth(), getHeight());
             }
         };
         popupRoot.setOpaque(true);
@@ -326,57 +288,33 @@ public class ScreenDistanceMonitor {
 
         // ── Header ───────────────────────────────────────────────────────────
         JPanel header = row();
-        headerDotLabel = new JLabel("◈");
-        headerDotLabel.setForeground(ACCENT);
-        headerDotLabel.setFont(headerDotLabel.getFont().deriveFont(Font.BOLD, 13f));
-        headerTitleLabel = label("POSTUREGUARD", TEXT_HI, Font.BOLD, 13f);
+        headerDotLabel = new JLabel("·");
+        headerDotLabel.setForeground(TEXT_DIM);
+        headerDotLabel.setFont(headerDotLabel.getFont().deriveFont(Font.PLAIN, 16f));
+        headerTitleLabel = label("PostureGuard", TEXT_HI, Font.BOLD, 13f);
         headerTitleLabel.setBorder(new EmptyBorder(0, 6, 0, 0));
+        headerThemeLabel = new JLabel(darkMode ? "◑" : "☀");
+        headerThemeLabel.setForeground(TEXT_DIM);
+        headerThemeLabel.setFont(headerThemeLabel.getFont().deriveFont(14f));
+        headerThemeLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        headerThemeLabel.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) {
+                darkMode = !darkMode;
+                headerThemeLabel.setText(darkMode ? "◑" : "☀");
+                applyTheme();
+            }
+        });
         header.add(headerDotLabel);
         header.add(headerTitleLabel);
         header.add(Box.createHorizontalGlue());
+        header.add(headerThemeLabel);
         popupRoot.add(header);
         popupRoot.add(vgap(8));
         popupRoot.add(new Divider());
-        popupRoot.add(vgap(8));
-
-        // ── Tab bar ───────────────────────────────────────────────────────────
-        JPanel tabBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        tabBar.setOpaque(false);
-        tabBar.setAlignmentX(Component.LEFT_ALIGNMENT);
-        tabBar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
-        tabMonitorBtn  = tabButton("MONITOR",  true);
-        tabSettingsBtn = tabButton("SETTINGS", false);
-        tabBar.add(tabMonitorBtn);
-        tabBar.add(tabSettingsBtn);
-        popupRoot.add(tabBar);
         popupRoot.add(vgap(10));
 
-        // ── Swappable content area ────────────────────────────────────────────
-        JPanel contentArea = new JPanel(new BorderLayout());
-        contentArea.setOpaque(false);
-        contentArea.setAlignmentX(Component.LEFT_ALIGNMENT);
-
-        JPanel monitorPanel  = buildMonitorPanel();
-        JPanel settingsPanel = buildSettingsPanel();
-        contentArea.add(monitorPanel, BorderLayout.CENTER);
-        popupRoot.add(contentArea);
-
-        tabMonitorBtn.addActionListener(e -> {
-            contentArea.removeAll();
-            contentArea.add(monitorPanel, BorderLayout.CENTER);
-            tabMonitorBtn.putClientProperty("active", true);
-            tabSettingsBtn.putClientProperty("active", false);
-            tabMonitorBtn.repaint(); tabSettingsBtn.repaint();
-            repackPopup();
-        });
-        tabSettingsBtn.addActionListener(e -> {
-            contentArea.removeAll();
-            contentArea.add(settingsPanel, BorderLayout.CENTER);
-            tabMonitorBtn.putClientProperty("active", false);
-            tabSettingsBtn.putClientProperty("active", true);
-            tabMonitorBtn.repaint(); tabSettingsBtn.repaint();
-            repackPopup();
-        });
+        // ── Content ───────────────────────────────────────────────────────────
+        popupRoot.add(buildMonitorPanel());
 
         // Make popup draggable
         MouseAdapter drag = new MouseAdapter() {
@@ -397,7 +335,8 @@ public class ScreenDistanceMonitor {
 
         popup.addWindowFocusListener(new WindowAdapter() {
             @Override public void windowLostFocus(WindowEvent e) {
-                if (!ignoreFocusLoss) popup.setVisible(false);
+                if (ignoreFocusLoss) return;
+                popup.setVisible(false);
             }
         });
     }
@@ -407,24 +346,14 @@ public class ScreenDistanceMonitor {
         p.setOpaque(false);
         p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
 
-        // Camera preview
-        previewLabel = new JLabel("CAMERA OFF") {
+        // Camera preview — only visible when camera is on
+        previewLabel = new JLabel() {
             @Override protected void paintComponent(Graphics g) {
+                if (getIcon() == null) return;
                 Graphics2D g2 = (Graphics2D) g.create();
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 g2.setColor(BG2);
                 g2.fillRoundRect(0, 0, getWidth(), getHeight(), 10, 10);
-                int m = 8, len = 18;
-                Color ac = ACCENT;
-                g2.setColor(new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 90));
-                g2.setStroke(new BasicStroke(1.5f));
-                g2.drawLine(m, m, m+len, m);               g2.drawLine(m, m, m, m+len);
-                g2.drawLine(getWidth()-m-len, m, getWidth()-m, m);
-                g2.drawLine(getWidth()-m, m, getWidth()-m, m+len);
-                g2.drawLine(m, getHeight()-m, m+len, getHeight()-m);
-                g2.drawLine(m, getHeight()-m-len, m, getHeight()-m);
-                g2.drawLine(getWidth()-m-len, getHeight()-m, getWidth()-m, getHeight()-m);
-                g2.drawLine(getWidth()-m, getHeight()-m-len, getWidth()-m, getHeight()-m);
                 super.paintComponent(g);
                 g2.dispose();
             }
@@ -433,16 +362,14 @@ public class ScreenDistanceMonitor {
         previewLabel.setMinimumSize(new Dimension(PW, PH));
         previewLabel.setMaximumSize(new Dimension(PW, PH));
         previewLabel.setOpaque(false);
-        previewLabel.setForeground(new Color(40, 50, 70));
-        previewLabel.setFont(new Font("Monospaced", Font.BOLD, 11));
         previewLabel.setHorizontalAlignment(SwingConstants.CENTER);
         previewLabel.setVerticalAlignment(SwingConstants.CENTER);
+        previewLabel.setVisible(false);
         p.add(previewLabel);
-        p.add(vgap(10));
 
         // Status + countdown
         JPanel statusRow = row();
-        statusLabel    = label("OFFLINE", TEXT_DIM, Font.BOLD, 11f);
+        statusLabel    = label("Offline", TEXT_DIM, Font.PLAIN, 11f);
         countdownLabel = label("", TEXT_DIM, Font.PLAIN, 11f);
         statusRow.add(statusLabel);
         statusRow.add(Box.createHorizontalGlue());
@@ -453,16 +380,56 @@ public class ScreenDistanceMonitor {
         p.add(vgap(10));
 
         // Frequency selector
-        checkEveryLabel = label("CHECK EVERY", TEXT_DIM, Font.BOLD, 10f);
+        checkEveryLabel = label("Check every", TEXT_DIM, Font.PLAIN, 11f);
         p.add(checkEveryLabel);
         p.add(vgap(6));
         freqSelector = new FreqSelector(1);
         freqSelector.setAlignmentX(Component.LEFT_ALIGNMENT);
-        freqSelector.addActionListener(e -> {
-            checkInterval = FREQ_SECONDS[freqSelector.getSelected()];
+        p.add(freqSelector);
+        p.add(vgap(6));
+
+        // Custom interval row — revealed when "···" is selected
+        JPanel customRow = new JPanel();
+        customRow.setOpaque(false);
+        customRow.setLayout(new BoxLayout(customRow, BoxLayout.X_AXIS));
+        customRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        customRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
+
+        customIntervalField = new JSpinner(new SpinnerNumberModel(checkInterval, 5, 3600, 5));
+        customIntervalField.setPreferredSize(new Dimension(80, 24));
+        customIntervalField.setMaximumSize(new Dimension(80, 24));
+        JSpinner.NumberEditor spinnerEditor = new JSpinner.NumberEditor(customIntervalField, "#");
+        spinnerEditor.getTextField().setForeground(TEXT_HI);
+        spinnerEditor.getTextField().setBackground(darkMode ? new Color(30, 30, 36) : new Color(225, 226, 232));
+        spinnerEditor.getTextField().setCaretColor(TEXT_HI);
+        spinnerEditor.getTextField().setBorder(new EmptyBorder(2, 4, 2, 4));
+        customIntervalField.setEditor(spinnerEditor);
+        customIntervalField.addChangeListener(e -> {
+            checkInterval = (Integer) customIntervalField.getValue();
             if (monitoring) restartCheckScheduler();
         });
-        p.add(freqSelector);
+
+        JLabel secLabel = label("sec", TEXT_DIM, Font.PLAIN, 11f);
+        secLabel.setBorder(new EmptyBorder(0, 6, 0, 0));
+
+        customRow.add(customIntervalField);
+        customRow.add(secLabel);
+        customRow.setVisible(false);
+        p.add(customRow);
+
+        freqSelector.addActionListener(e -> {
+            int idx = freqSelector.getSelected();
+            boolean isCustom = (idx == FREQ_LABELS.length - 1);
+            customRow.setVisible(isCustom);
+            popupRoot.revalidate();
+            popupRoot.repaint();
+            repackPopup();
+            if (!isCustom) {
+                checkInterval = FREQ_SECONDS[idx];
+                if (monitoring) restartCheckScheduler();
+            }
+        });
+
         p.add(vgap(10));
         p.add(new Divider());
         p.add(vgap(10));
@@ -470,7 +437,7 @@ public class ScreenDistanceMonitor {
         // Monitoring toggle
         monitorToggle = new ToggleSwitch(false);
         monitorToggle.addActionListener(e -> onMonitorToggle());
-        monitoringLabel = label("MONITORING", TOGGLE_LBL, Font.BOLD, 11f);
+        monitoringLabel = label("Monitoring", TOGGLE_LBL, Font.PLAIN, 11f);
         JPanel monRow = row();
         monRow.add(monitoringLabel);
         monRow.add(Box.createHorizontalGlue());
@@ -483,9 +450,15 @@ public class ScreenDistanceMonitor {
         cameraToggle.setEnabled(false);
         cameraToggle.addActionListener(e -> {
             showCamera = cameraToggle.isOn();
-            if (!showCamera) clearPreview();
+            if (showCamera) {
+                previewLabel.setVisible(true);
+            } else {
+                clearPreview();
+                previewLabel.setVisible(false);
+            }
+            repackPopup();
         });
-        cameraLabel = label("CAMERA VIEW", TOGGLE_LBL, Font.BOLD, 11f);
+        cameraLabel = label("Camera view", TOGGLE_LBL, Font.PLAIN, 11f);
         JPanel camRow = row();
         camRow.add(cameraLabel);
         camRow.add(Box.createHorizontalGlue());
@@ -495,6 +468,22 @@ public class ScreenDistanceMonitor {
         p.add(new Divider());
         p.add(vgap(10));
 
+        // Calibrate
+        JButton calibBtn = buildAccentButton("Recalibrate");
+        calibBtn.addActionListener(e -> {
+            baseline = null;
+            baselineYRatio = null;
+            if (monitoring) {
+                if (checkScheduler != null) checkScheduler.shutdownNow();
+                checkScheduler = daemonScheduler("posture-check");
+                checkScheduler.scheduleWithFixedDelay(
+                        ScreenDistanceMonitor::runCheck, 0, checkInterval, TimeUnit.SECONDS);
+            }
+            setStatus("Calibrating...", ACCENT);
+        });
+        p.add(calibBtn);
+        p.add(vgap(6));
+
         // Quit
         JButton quit = buildQuitButton();
         quit.addActionListener(e -> doQuit());
@@ -502,97 +491,21 @@ public class ScreenDistanceMonitor {
         return p;
     }
 
-    private static JPanel buildSettingsPanel() {
-        JPanel p = new JPanel();
-        p.setOpaque(false);
-        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
-
-        // Appearance section
-        appearanceLabel = label("APPEARANCE", TEXT_DIM, Font.BOLD, 10f);
-        p.add(appearanceLabel);
-        p.add(vgap(8));
-
-        ToggleSwitch themeToggle = new ToggleSwitch(!darkMode); // on = light mode
-        themeToggle.addActionListener(e -> {
-            darkMode = !themeToggle.isOn();
-            applyTheme();
-        });
-        lightModeLabel = label("LIGHT MODE", TOGGLE_LBL, Font.BOLD, 11f);
-        JPanel themeRow = row();
-        themeRow.add(lightModeLabel);
-        themeRow.add(Box.createHorizontalGlue());
-        themeRow.add(themeToggle);
-        p.add(themeRow);
-        p.add(vgap(14));
-        p.add(new Divider());
-        p.add(vgap(12));
-
-        // Accent color section
-        accentColorLabel = label("ACCENT COLOR", TEXT_DIM, Font.BOLD, 10f);
-        p.add(accentColorLabel);
-        p.add(vgap(8));
-
-        JPanel swatches = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        swatches.setOpaque(false);
-        swatches.setAlignmentX(Component.LEFT_ALIGNMENT);
-        String[] names = {"Cyan", "Purple", "Green", "Orange", "Pink"};
-        for (int i = 0; i < ACCENT_PRESETS.length; i++) {
-            final int idx = i;
-            final Color c = ACCENT_PRESETS[i];
-            JComponent swatch = new JComponent() {
-                @Override protected void paintComponent(Graphics g) {
-                    Graphics2D g2 = (Graphics2D) g.create();
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    if (accentIdx == idx) {
-                        // selection ring
-                        g2.setColor(c);
-                        g2.setStroke(new BasicStroke(2f));
-                        g2.drawOval(1, 1, getWidth()-3, getHeight()-3);
-                    }
-                    g2.setColor(c);
-                    g2.fillOval(5, 5, getWidth()-10, getHeight()-10);
-                    g2.dispose();
-                }
-            };
-            swatch.setPreferredSize(new Dimension(32, 32));
-            swatch.setToolTipText(names[i]);
-            swatch.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            swatch.addMouseListener(new MouseAdapter() {
-                @Override public void mousePressed(MouseEvent e) {
-                    accentIdx = idx;
-                    applyTheme();
-                    swatches.repaint();
-                }
-            });
-            swatches.add(swatch);
-        }
-        p.add(swatches);
-        p.add(vgap(14));
-        p.add(new Divider());
-        p.add(vgap(10));
-
-        // Quit from settings tab too
-        JButton quit = buildQuitButton();
-        quit.addActionListener(e -> doQuit());
-        p.add(quit);
-        return p;
-    }
-
     private static void applyTheme() {
-        ACCENT     = ACCENT_PRESETS[accentIdx];
-        ACCENT_DIM = new Color(ACCENT.getRed(), ACCENT.getGreen(), ACCENT.getBlue(), 35);
         if (darkMode) {
-            BG         = new Color(9,   9,   13);
-            BG2        = new Color(15,  15,  22);
-            TEXT_HI    = new Color(230, 235, 255);
-            TEXT_DIM   = new Color(90,  100, 130);
-            TOGGLE_LBL = new Color(170, 175, 200);
-        } else {
-            BG         = new Color(242, 242, 247);
-            BG2        = new Color(255, 255, 255);
-            TEXT_HI    = new Color(20,  20,  30);
+            BG         = new Color(18,  18,  20);
+            BG2        = new Color(28,  28,  32);
+            ACCENT     = new Color(90,  120, 200);
+            TEXT_HI    = new Color(220, 222, 230);
             TEXT_DIM   = new Color(100, 105, 120);
-            TOGGLE_LBL = new Color(50,  55,  75);
+            TOGGLE_LBL = new Color(160, 165, 185);
+        } else {
+            BG         = new Color(245, 245, 248);
+            BG2        = new Color(255, 255, 255);
+            ACCENT     = new Color(60,  100, 190);
+            TEXT_HI    = new Color(20,  22,  30);
+            TEXT_DIM   = new Color(110, 115, 130);
+            TOGGLE_LBL = new Color(55,  60,  80);
         }
         SwingUtilities.invokeLater(() -> {
             if (popup == null) return;
@@ -600,53 +513,52 @@ public class ScreenDistanceMonitor {
             popupRoot.setBackground(BG);
             if (headerDotLabel   != null) headerDotLabel.setForeground(ACCENT);
             if (headerTitleLabel != null) headerTitleLabel.setForeground(TEXT_HI);
+            if (headerThemeLabel != null) headerThemeLabel.setForeground(TEXT_DIM);
             if (countdownLabel   != null) countdownLabel.setForeground(TEXT_DIM);
             if (checkEveryLabel  != null) checkEveryLabel.setForeground(TEXT_DIM);
             if (monitoringLabel  != null) monitoringLabel.setForeground(TOGGLE_LBL);
-            if (cameraLabel      != null) cameraLabel.setForeground(TOGGLE_LBL);
-            if (appearanceLabel  != null) appearanceLabel.setForeground(TEXT_DIM);
-            if (accentColorLabel != null) accentColorLabel.setForeground(TEXT_DIM);
-            if (lightModeLabel   != null) lightModeLabel.setForeground(TOGGLE_LBL);
+            if (cameraLabel           != null) cameraLabel.setForeground(TOGGLE_LBL);
+            if (customIntervalField != null) {
+                JSpinner.NumberEditor ed = (JSpinner.NumberEditor) customIntervalField.getEditor();
+                ed.getTextField().setForeground(TEXT_HI);
+                ed.getTextField().setCaretColor(TEXT_HI);
+                ed.getTextField().setBackground(darkMode ? new Color(30, 30, 36) : new Color(225, 226, 232));
+            }
             if (statusLabel != null && !monitoring) statusLabel.setForeground(TEXT_DIM);
             popup.repaint();
         });
     }
 
-    private static JButton tabButton(String text, boolean active) {
-        JButton b = new JButton(text) {
+    private static JButton buildAccentButton(String text) {
+        JButton btn = new JButton(text) {
             @Override protected void paintComponent(Graphics g) {
-                boolean a = Boolean.TRUE.equals(getClientProperty("active"));
                 Graphics2D g2 = (Graphics2D) g.create();
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                int w = getWidth(), h = getHeight();
-                Color ac = ACCENT;
-                if (a) {
-                    g2.setColor(new Color(ac.getRed(), ac.getGreen(), ac.getBlue(), 30));
-                    g2.fillRoundRect(0, 0, w, h, 8, 8);
-                    g2.setColor(ac);
-                    g2.setStroke(new BasicStroke(1.2f));
-                    g2.drawRoundRect(0, 0, w-1, h-1, 8, 8);
-                    g2.setFont(getFont().deriveFont(Font.BOLD, 10f));
-                    g2.setColor(ac);
-                } else {
-                    g2.setColor(darkMode ? new Color(25, 25, 36) : new Color(215, 217, 225));
-                    g2.fillRoundRect(0, 0, w, h, 8, 8);
-                    g2.setFont(getFont().deriveFont(10f));
-                    g2.setColor(TEXT_DIM);
-                }
+                boolean pressed = getModel().isPressed();
+                Color base = darkMode ? new Color(25, 30, 55) : new Color(220, 228, 248);
+                Color border = darkMode ? new Color(60, 90, 170) : new Color(100, 140, 220);
+                Color fg = darkMode ? new Color(130, 160, 230) : new Color(50, 90, 180);
+                g2.setColor(pressed ? border : base);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 8, 8);
+                g2.setColor(pressed ? fg : border);
+                g2.setStroke(new BasicStroke(1.1f));
+                g2.drawRoundRect(0, 0, getWidth()-1, getHeight()-1, 8, 8);
+                g2.setFont(getFont().deriveFont(Font.BOLD, 11f));
+                g2.setColor(pressed ? Color.WHITE : fg);
                 FontMetrics fm = g2.getFontMetrics();
                 g2.drawString(getText(),
-                        (w - fm.stringWidth(getText())) / 2,
-                        (h - fm.getHeight()) / 2 + fm.getAscent());
+                        (getWidth() - fm.stringWidth(getText())) / 2,
+                        (getHeight() - fm.getHeight()) / 2 + fm.getAscent());
                 g2.dispose();
             }
         };
-        b.putClientProperty("active", active);
-        b.setOpaque(false); b.setContentAreaFilled(false);
-        b.setBorderPainted(false); b.setFocusPainted(false);
-        b.setPreferredSize(new Dimension(90, 26));
-        b.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        return b;
+        btn.setOpaque(false); btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false); btn.setFocusPainted(false);
+        btn.setPreferredSize(new Dimension(100, 30));
+        btn.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+        btn.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        return btn;
     }
 
     private static JButton buildQuitButton() {
@@ -735,14 +647,14 @@ public class ScreenDistanceMonitor {
             baseline = null; baselineYRatio = null; nextCheckAt = 0;
             cameraToggle.setEnabled(true);
             startSchedulers();
-            setStatus("STARTING...", TEXT_DIM);
+            setStatus("Starting...", TEXT_DIM);
         } else {
             cameraToggle.setEnabled(false);
             cameraToggle.setOn(false);
             showCamera = false;
             stopMonitoring();
             clearPreview();
-            setStatus("OFFLINE", TEXT_DIM);
+            setStatus("Offline", TEXT_DIM);
             SwingUtilities.invokeLater(() -> countdownLabel.setText(""));
         }
     }
@@ -797,7 +709,7 @@ public class ScreenDistanceMonitor {
 
     private static void runCheck() {
         if (!monitoring) return;
-        setStatus("SCANNING...", ACCENT);
+        setStatus("Scanning...", ACCENT);
         SwingUtilities.invokeLater(() -> countdownLabel.setText(""));
         try {
             OpenCVFrameGrabber grabber = new OpenCVFrameGrabber(0);
@@ -805,8 +717,8 @@ public class ScreenDistanceMonitor {
             try {
                 doCheck(grabber);
             } finally {
+                grabber.stop(); // release camera hardware immediately
                 if (showCamera) { Thread.sleep(1200); clearPreview(); }
-                grabber.stop();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -820,16 +732,22 @@ public class ScreenDistanceMonitor {
         OpenCVFrameConverter.ToMat matConv = new OpenCVFrameConverter.ToMat();
         Java2DFrameConverter java2D = new Java2DFrameConverter();
 
-        boolean calibrating = (baseline == null);
-        int totalFrames = calibrating ? CALIBRATION_FRAMES + CHECK_FRAMES : CHECK_FRAMES;
+        boolean needsCalibration = (baseline == null);
+        boolean checkStarted     = !needsCalibration;
         int frameH = grabber.getImageHeight();
 
         double calWidthSum = 0, calYSum = 0;
         int calCount = 0;
-        int consecutiveClose = 0, consecutiveHeadDown = 0;
-        boolean tooClose = false, headAngle = false;
+        int faceFrames = 0, closeFrames = 0, headDownFrames = 0;
 
-        for (int i = 0; i < totalFrames && monitoring; i++) {
+        // For the check window we loop up to 7 seconds; calibration gets extra time first.
+        long checkDeadline = needsCalibration ? Long.MAX_VALUE : System.currentTimeMillis() + 7_000L;
+
+        while (monitoring) {
+            if (checkStarted && System.currentTimeMillis() > checkDeadline) break;
+            // Exit early once we have plenty of face samples
+            if (checkStarted && faceFrames >= 30) break;
+
             Frame frame = grabber.grab();
             if (frame == null) continue;
             Mat mat = matConv.convert(frame);
@@ -840,7 +758,8 @@ public class ScreenDistanceMonitor {
             equalizeHist(gray, gray);
 
             RectVector faces = new RectVector();
-            faceDetector.detectMultiScale(gray, faces);
+            faceDetector.detectMultiScale(gray, faces, 1.1, 3, 0,
+                    new Size(40, 40), new Size(0, 0));
 
             Scalar boxColor = null;
             if (faces.size() > 0) {
@@ -853,25 +772,26 @@ public class ScreenDistanceMonitor {
                         ? (largest.y() + largest.height() / 2.0) / frameH
                         : 0.5;
 
-                if (calibrating && baseline == null) {
+                if (!checkStarted) {
+                    // Calibration phase
                     calWidthSum += width; calYSum += yRatio; calCount++;
-                    boxColor = new Scalar(255, 200, 0, 0); // amber: calibrating
+                    boxColor = new Scalar(255, 200, 0, 0);
                     if (calCount >= CALIBRATION_FRAMES) {
                         baseline       = calWidthSum / calCount;
                         baselineYRatio = calYSum     / calCount;
-                        setStatus("CALIBRATED", ACCENT);
+                        checkStarted   = true;
+                        checkDeadline  = System.currentTimeMillis() + 7_000L;
+                        setStatus("Calibrated", ACCENT);
                     }
-                } else if (baseline != null && baselineYRatio != null) {
+                } else {
                     boolean frameClose    = (width / baseline) >= DISTANCE_ALERT_RATIO;
-                    // Positive delta → face dropped lower in frame → head angled forward/down
                     boolean frameHeadDown = (yRatio - baselineYRatio) > HEAD_ANGLE_THRESHOLD;
-                    consecutiveClose    = frameClose    ? consecutiveClose + 1    : 0;
-                    consecutiveHeadDown = frameHeadDown ? consecutiveHeadDown + 1 : 0;
-                    if (consecutiveClose    >= CONSECUTIVE_REQUIRED) tooClose  = true;
-                    if (consecutiveHeadDown >= CONSECUTIVE_REQUIRED) headAngle = true;
-                    boxColor = tooClose  ? new Scalar(75,  55, 255, 0)
-                             : headAngle ? new Scalar(0,  165, 255, 0)
-                                        : new Scalar(0,  230, 130, 0);
+                    faceFrames++;
+                    if (frameClose)    closeFrames++;
+                    if (frameHeadDown) headDownFrames++;
+                    boxColor = frameClose    ? new Scalar(75,  55, 255, 0)
+                             : frameHeadDown ? new Scalar(0,  165, 255, 0)
+                                            : new Scalar(0,  230, 130, 0);
                 }
                 if (showCamera && boxColor != null) rectangle(mat, largest, boxColor, 2, LINE_8, 0);
             }
@@ -888,21 +808,29 @@ public class ScreenDistanceMonitor {
             }
         }
 
-        if (baseline == null) return; // only finished calibration, no result yet
+        if (!checkStarted) return; // calibration-only run, no result yet
 
-        // Notify every check — no cooldown
+        // Not enough frames with a detectable face — don't guess
+        if (faceFrames < MIN_FACE_FRAMES) {
+            setStatus("No face", TEXT_DIM);
+            return;
+        }
+
+        boolean tooClose  = closeFrames   * 100 >= faceFrames * ISSUE_THRESHOLD_PCT;
+        boolean headAngle = headDownFrames * 100 >= faceFrames * ISSUE_THRESHOLD_PCT;
+
         if (tooClose) {
             String tip = DISTANCE_TIPS[distanceTipIdx % DISTANCE_TIPS.length];
             distanceTipIdx++;
-            setStatus("TOO CLOSE", BAD);
+            setStatus("Too close", BAD);
             osNotify(tip);
         } else if (headAngle) {
             String tip = ANGLE_TIPS[angleTipIdx % ANGLE_TIPS.length];
             angleTipIdx++;
-            setStatus("HEAD FORWARD", BAD);
+            setStatus("Head forward", BAD);
             osNotify(tip);
         } else {
-            setStatus("ALL CLEAR", GOOD);
+            setStatus("All clear", GOOD);
             osNotify("Good posture! Keep it up.");
         }
     }
